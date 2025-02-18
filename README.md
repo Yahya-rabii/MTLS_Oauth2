@@ -1,27 +1,15 @@
-# MTLS_Oauth2
+Sure! Below is the **full solution** with all necessary configurations, including:  
 
-Dans une architecture Spring Boot, on peux sécuriser différents endpoints avec **MTLS** pour les communications **interservices** et **OAuth 2** pour l’authentification des utilisateurs et clients API. Voici comment tu peux organiser cela :
+✅ **MTLS for internal endpoints (`/internal/**`)**  
+✅ **OAuth 2 for user/admin endpoints (`/api/user/**`, `/api/admin/**`)**  
+✅ **Public endpoints (`/public/**`) accessible without authentication**  
+✅ **Full `application.yml` configuration**  
+✅ **MTLS and OAuth 2 security filters**  
+✅ **Spring Security configuration**  
 
 ---
 
-## 🔒 **1. Sécuriser certains endpoints avec MTLS**  
-### 📌 Objectif :  
-MTLS permet d'assurer que seuls des clients authentifiés (autres microservices, API partenaires) peuvent appeler certains endpoints.
-
-### **🔧 Étapes :**  
-#### 1️⃣ **Générer les certificats (clé privée + certificat client/serveur)**
-Utilise OpenSSL ou une autorité de certification pour créer un keystore et un truststore.
-
-```sh
-# Génération du keystore serveur
-keytool -genkey -alias server -keyalg RSA -keystore server-keystore.jks -storepass changeit -validity 365
-
-# Génération du truststore (contenant le certificat client)
-keytool -import -alias client -file client-cert.pem -keystore truststore.jks -storepass changeit
-```
-
-#### 2️⃣ **Configurer Spring Boot pour activer MTLS**
-Dans **`application.yml`** :
+## 📌 **1. `application.yml` - Configure SSL and OAuth 2**
 ```yaml
 server:
   port: 8443
@@ -32,70 +20,81 @@ server:
     trust-store: classpath:truststore.jks
     trust-store-password: changeit
     trust-store-type: JKS
-    client-auth: NEED  # FORCE le client à fournir un certificat
-```
+    client-auth: NEED # Enforce MTLS for clients
 
-#### 3️⃣ **Restreindre les accès à certains endpoints**  
-Dans **Spring Security**, utilise un filtre pour appliquer MTLS uniquement sur certains endpoints :
-
-```java
-@Configuration
-@EnableWebSecurity
-public class SecurityConfig {
-    @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-        http
-            .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/internal/**").authenticated() // MTLS obligatoire pour ces endpoints
-                .anyRequest().permitAll()
-            )
-            .requiresChannel(channel -> channel.anyRequest().requiresSecure())
-            .sslConfigurer().trustManager(trustManager -> {
-                trustManager.trustStore("classpath:truststore.jks", "changeit");
-            });
-
-        return http.build();
-    }
-}
-```
-
----
-
-## 🔑 **2. Sécuriser d'autres endpoints avec OAuth 2**  
-### 📌 Objectif :  
-OAuth 2 permet d’authentifier les utilisateurs via un **Authorization Server** (Keycloak, Okta, Auth0, Spring Authorization Server...).
-
-### **🔧 Étapes :**  
-#### 1️⃣ **Configurer l’Authorization Server**  
-Si tu utilises **Keycloak**, crée un realm avec des clients, utilisateurs et rôles.
-
-#### 2️⃣ **Configurer Spring Boot pour OAuth 2**  
-Ajoute cette configuration dans **`application.yml`** :
-```yaml
 spring:
   security:
     oauth2:
       resourceserver:
         jwt:
-          issuer-uri: https://your-keycloak.com/realms/myrealm
+          issuer-uri: https://your-keycloak.com/realms/myrealm # Change this to your identity provider
 ```
 
-#### 3️⃣ **Restreindre les accès aux endpoints protégés par OAuth 2**
-Dans **Spring Security**, protège certains endpoints avec JWT :
+---
 
+## 📌 **2. `MTLSFilter.java` - Enforce MTLS for `/internal/**`**
 ```java
+import jakarta.servlet.Filter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.core.annotation.Order;
+import org.springframework.stereotype.Component;
+import java.io.IOException;
+import java.security.cert.X509Certificate;
+
+@Component
+@Order(1) // Ensures this filter runs first before Spring Security
+public class MTLSFilter implements Filter {
+
+    @Override
+    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+            throws IOException, ServletException {
+
+        HttpServletRequest httpRequest = (HttpServletRequest) request;
+        String requestURI = httpRequest.getRequestURI();
+
+        // Apply MTLS only for "/internal/**" endpoints
+        if (requestURI.startsWith("/internal/")) {
+            X509Certificate[] certs = (X509Certificate[]) httpRequest.getAttribute("javax.servlet.request.X509Certificate");
+
+            if (certs == null || certs.length == 0) {
+                HttpServletResponse httpResponse = (HttpServletResponse) response;
+                httpResponse.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Client certificate required for internal API");
+                return;
+            }
+        }
+
+        chain.doFilter(request, response);
+    }
+}
+```
+
+---
+
+## 📌 **3. `SecurityConfig.java` - Configure Spring Security for OAuth 2**
+```java
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.web.SecurityFilterChain;
+
 @Configuration
-@EnableWebSecurity
-public class OAuth2SecurityConfig {
+public class SecurityConfig {
+
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/user/**").authenticated() // OAuth 2 requis
-                .requestMatchers("/api/admin/**").hasRole("ADMIN") // Rôle ADMIN requis
-                .anyRequest().permitAll()
+                .requestMatchers("/internal/**").authenticated() // MTLS is enforced via MTLSFilter
+                .requestMatchers("/api/user/**").authenticated() // OAuth2 JWT required
+                .requestMatchers("/api/admin/**").hasRole("ADMIN") // OAuth2 + Role required
+                .anyRequest().permitAll() // Public endpoints
             )
-            .oauth2ResourceServer(OAuth2ResourceServerConfigurer::jwt);
+            .oauth2ResourceServer(oauth2 -> oauth2.jwt()); // Enforce OAuth2 JWT for non-MTLS endpoints
 
         return http.build();
     }
@@ -104,24 +103,34 @@ public class OAuth2SecurityConfig {
 
 ---
 
-## 🛠 **3. Architecture hybride MTLS + OAuth 2**  
-### **🌐 Organisation des endpoints**
-| Endpoint | Sécurisé avec |
-|----------|--------------|
-| `/internal/**` | **MTLS** (authentification mutuelle des microservices) |
-| `/api/user/**` | **OAuth 2** (JWT des utilisateurs) |
-| `/api/admin/**` | **OAuth 2** (JWT avec rôle ADMIN) |
-
-### **📌 Cas d’usage**
-- Un **microservice A** appelle un **microservice B** → **MTLS** est requis.
-- Un **utilisateur** accède à une API via une **SPA (Angular)** → **OAuth 2 (JWT)** est utilisé.
-- Un **admin** accède à une page de gestion → **OAuth 2 avec rôle ADMIN** est requis.
+## 📌 **4. How It Works**
+| Endpoint | Security Mechanism | Enforcement |
+|----------|-------------------|-------------|
+| `/internal/**` | **MTLS (Client Certificate Required)** | Checked in `MTLSFilter` |
+| `/api/user/**` | **OAuth 2 (JWT Required)** | Enforced by Spring Security |
+| `/api/admin/**` | **OAuth 2 (JWT + Role Required)** | Enforced by Spring Security |
+| `/public/**` | **No Security** | Accessible to everyone |
 
 ---
 
-### ✅ **Conclusion**
-- **MTLS** protège les endpoints critiques accessibles uniquement par d’autres services authentifiés.
-- **OAuth 2** protège les endpoints accessibles aux utilisateurs.
-- Les deux coexistent et peuvent être activés indépendamment en fonction des besoins.
+## 📌 **5. Generate Keystore & Truststore (MTLS Certificates)**
+Use these commands to generate your server keystore and truststore.
 
-Besoin d’un exemple plus détaillé avec du code spécifique ? 😊
+```sh
+# Generate Server Keystore (for Spring Boot)
+keytool -genkey -alias server -keyalg RSA -keystore server-keystore.jks -storepass changeit -validity 365
+
+# Generate Truststore (for Client Certificates)
+keytool -import -alias client -file client-cert.pem -keystore truststore.jks -storepass changeit
+```
+
+---
+
+## ✅ **Conclusion**
+- **MTLS is enforced first via `MTLSFilter`** for `/internal/**`.  
+- **OAuth 2 is applied for user/admin APIs** via Spring Security.  
+- **Public endpoints remain open**.  
+
+This **cleanly separates** both security mechanisms within the same Spring Boot project.
+
+Would you like to see a **full example with a test client**? 🚀
