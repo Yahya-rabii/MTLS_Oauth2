@@ -1,11 +1,4 @@
-Sure! Below is the **full solution** with all necessary configurations, including:  
 
-✅ **MTLS for internal endpoints (`/internal/**`)**  
-✅ **OAuth 2 for user/admin endpoints (`/api/user/**`, `/api/admin/**`)**  
-✅ **Public endpoints (`/public/**`) accessible without authentication**  
-✅ **Full `application.yml` configuration**  
-✅ **MTLS and OAuth 2 security filters**  
-✅ **Spring Security configuration**  
 
 ---
 
